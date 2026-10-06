@@ -1,0 +1,6 @@
+{
+  "name": "Vila Ancestral - Evolução por Turnos",
+  "description": "Jogo de estratégia por turnos onde você evolui uma vila desde dois aldeões neolíticos colhendo trigo até uma próspera metrópole com muralhas e zigurates.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

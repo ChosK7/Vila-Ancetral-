@@ -1,0 +1,35 @@
+@import "tailwindcss";
+
+@theme {
+  --font-hand: 'Patrick Hand', cursive, sans-serif;
+  --font-display: 'Cinzel', serif;
+  --font-sans: 'Plus Jakarta Sans', system-ui, sans-serif;
+}
+
+.font-hand {
+  font-family: 'Patrick Hand', cursive, sans-serif;
+}
+
+.font-display {
+  font-family: 'Cinzel', serif;
+}
+
+/* Custom parchment scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #EFE4CE;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #B69A72;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #8C6A3F;
+}
