@@ -80,7 +80,7 @@ export const INITIAL_VILLAGERS: Villager[] = [
     gender: 'female',
     tunicColor: '#4A7C8E', // blue tunic like in image 1
     hairStyle: 'wavy',
-    job: 'farmer',
+    job: 'lumberjack',
     morale: 85,
     health: 100,
     maxHealth: 100,
@@ -624,7 +624,7 @@ export const RANDOM_EVENTS: GameEvent[] = [
 export const INITIAL_STATE: GameState = {
   playerName: 'Líder da Vila',
   autoAssignIdle: true,
-  gameHour: 6.0,
+  gameHour: 5.6,
   isTimePaused: false,
   villageLevel: 1,
   villageXP: 0,

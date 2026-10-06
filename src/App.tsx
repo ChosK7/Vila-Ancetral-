@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { GameState, JobType, TurnReport, Villager } from './types/game';
-import { INITIAL_STATE, RANDOM_EVENTS, ERAS_INFO } from './data/initialData';
+import { GameState, JobType, Villager } from './types/game';
+import { INITIAL_STATE, RANDOM_EVENTS } from './data/initialData';
 import { ThreeVillageScene } from './three/ThreeVillageScene';
 import { ExpandableResourceBar } from './components/ExpandableResourceBar';
 import { TaskAssignmentBar } from './components/TaskAssignmentBar';
@@ -12,6 +12,18 @@ import { EventModal } from './components/EventModal';
 import { HelpModal } from './components/HelpModal';
 import { VictoryModal } from './components/VictoryModal';
 import { audio } from './utils/audio';
+import { advanceGameHour, TICK_MS } from './game/GameClock';
+import { calculateProductionRates, processMealConsumption } from './game/ResourceSystem';
+import {
+  autoAssignIdleVillagers,
+  assignVillagerToJob,
+  unassignVillagerFromJob,
+} from './game/JobSystem';
+import {
+  calculateHousingCapacity,
+  startBuildingConstruction,
+} from './game/BuildingSystem';
+import { advanceSimulationDay } from './game/Simulation';
 import {
   BookOpen,
   Edit2,
@@ -30,7 +42,12 @@ export default function App() {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
       if (saved) {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        if (parsed.activeEvent) {
+          const canonical = RANDOM_EVENTS.find((e) => e.id === parsed.activeEvent.id);
+          parsed.activeEvent = canonical || null;
+        }
+        return parsed;
       }
     } catch (e) {
       // fallback
@@ -64,311 +81,35 @@ export default function App() {
     audio.setEnabled(gameState.soundEnabled);
   }, [gameState.soundEnabled]);
 
-  // Production rates calculation
-  const rates = useMemo(() => {
-    const { villagers, buildings, technologies, seasonIndex } = gameState;
-    const season = ['Primavera', 'Verão', 'Outono', 'Inverno'][seasonIndex];
-
-    const sicklesBonus = technologies.curved_sickles?.unlocked ? 0.35 : 0;
-    const wellBonus = (buildings.village_well?.count || 0) > 0 ? 0.25 : 0;
-    const grindingBonus = (buildings.grain_grinding?.count || 0) > 0 ? 0.2 : 0;
-    const longhouseBonus = (buildings.longhouse?.count || 0) > 0 ? 1 : 0;
-    const schoolBonus = (buildings.scribal_school?.count || 0) > 0 ? 2 : 1;
-    const tabletsBonus = technologies.clay_tablets?.unlocked ? 1 : 0;
-
-    let seasonFarmMultiplier = 1;
-    if (season === 'Primavera') seasonFarmMultiplier = 1.25;
-    if (season === 'Outono') seasonFarmMultiplier = 1.35;
-    if (season === 'Inverno') seasonFarmMultiplier = 0.65;
-
-    let foodProduced = 0;
-    let woodProduced = 0;
-    let stoneProduced = 0;
-    let clayProduced = 0;
-    let knowledgeProduced = 0;
-
-    villagers.forEach((v) => {
-      const traitMult = v.trait?.multiplier || 1;
-      const moraleMult = v.morale >= 80 ? 1.15 : v.morale <= 40 ? 0.8 : 1;
-
-      if (v.job === 'farmer') {
-        const base = 6 + longhouseBonus;
-        foodProduced += base * (1 + sicklesBonus + wellBonus) * seasonFarmMultiplier * traitMult * moraleMult;
-      } else if (v.job === 'lumberjack') {
-        const base = 5 + longhouseBonus;
-        woodProduced += base * traitMult * moraleMult;
-      } else if (v.job === 'quarryman') {
-        const base = 4 + longhouseBonus;
-        stoneProduced += base * traitMult * moraleMult;
-      } else if (v.job === 'potter') {
-        const base = 4 + longhouseBonus;
-        clayProduced += base * traitMult * moraleMult;
-      } else if (v.job === 'elder') {
-        const base = 3 + longhouseBonus;
-        knowledgeProduced += base * (1 + tabletsBonus) * schoolBonus * traitMult * moraleMult;
-      }
-    });
-
-    const foodConsumed = Math.round(villagers.length * (1 - grindingBonus));
-    const foodNet = Math.round(foodProduced) - foodConsumed;
-
-    return {
-      foodNet,
-      foodProduced: Math.round(foodProduced),
-      foodConsumed,
-      wood: Math.round(woodProduced),
-      stone: Math.round(stoneProduced),
-      clay: Math.round(clayProduced),
-      knowledge: Math.round(knowledgeProduced),
-    };
-  }, [gameState]);
-
-  // Auto-assign idle villagers logic: "Aldeões desocupado vai automaticamente para uma função livre ou com maior necessidade"
-  const autoAssignIdleVillagers = useCallback(
-    (currentVillagers: Villager[], currentState: GameState, currentRates: any): Villager[] => {
-      const idleCount = currentVillagers.filter((v) => v.job === 'idle').length;
-      if (idleCount === 0) return currentVillagers;
-
-      const jobCounts: Record<JobType, number> = {
-        idle: 0,
-        farmer: 0,
-        lumberjack: 0,
-        quarryman: 0,
-        potter: 0,
-        elder: 0,
-        guard: 0,
-        builder: 0,
-      };
-      currentVillagers.forEach((v) => {
-        jobCounts[v.job] = (jobCounts[v.job] || 0) + 1;
-      });
-
-      const hasActiveConstruction = Object.values(currentState.buildings).some(
-        (b) => b.constructionTurnsLeft > 0
-      );
-      const hasPottery = !!currentState.technologies.primitive_pottery?.unlocked;
-
-      const getJobForNextIdle = (): JobType => {
-        // 1. Food security: if food <= 18 or net food is negative or no farmers at all
-        if (
-          currentState.resources.food <= 18 ||
-          currentRates.foodNet < 0 ||
-          jobCounts.farmer < 1
-        ) {
-          jobCounts.farmer++;
-          return 'farmer';
-        }
-        // 2. Wood for shelters, tools and expansion
-        if (currentState.resources.wood < 25 && jobCounts.lumberjack < 2) {
-          jobCounts.lumberjack++;
-          return 'lumberjack';
-        }
-        // 3. Stone for masonry and masonry buildings
-        if (currentState.resources.stone < 15 && jobCounts.quarryman < 2) {
-          jobCounts.quarryman++;
-          return 'quarryman';
-        }
-        // 4. Active construction works in progress
-        if (hasActiveConstruction && jobCounts.builder < 2) {
-          jobCounts.builder++;
-          return 'builder';
-        }
-        // 5. Clay if pottery is unlocked and clay is scarce
-        if (hasPottery && currentState.resources.clay < 15 && jobCounts.potter < 1) {
-          jobCounts.potter++;
-          return 'potter';
-        }
-        // 6. Elder for research points
-        if (jobCounts.elder < 1) {
-          jobCounts.elder++;
-          return 'elder';
-        }
-        // 7. General balancing between food, wood, stone
-        if (jobCounts.farmer <= jobCounts.lumberjack && jobCounts.farmer <= jobCounts.quarryman) {
-          jobCounts.farmer++;
-          return 'farmer';
-        }
-        if (jobCounts.lumberjack <= jobCounts.quarryman) {
-          jobCounts.lumberjack++;
-          return 'lumberjack';
-        }
-        jobCounts.quarryman++;
-        return 'quarryman';
-      };
-
-      return currentVillagers.map((v) => {
-        if (v.job === 'idle') {
-          const assignedJob = getJobForNextIdle();
-          return { ...v, job: assignedJob };
-        }
-        return v;
-      });
-    },
-    []
-  );
+  // Production rates calculation via ResourceSystem
+  const rates = useMemo(() => calculateProductionRates(gameState), [gameState]);
 
   // Automatic Day / Turn completion when 24-hour cycle completes
   const executeAutoDayAdvance = useCallback(
     (prev: GameState, remainingHour: number): GameState => {
       audio.playTurn();
-
-      const nextTurn = prev.turn + 1;
-      const nextSeasonIdx = (prev.seasonIndex + 1) % 4;
-      const nextYear = nextSeasonIdx === 0 ? prev.year + 1 : prev.year;
-      const seasons = ['Primavera', 'Verão', 'Outono', 'Inverno'] as const;
-      const currentSeasonName = seasons[prev.seasonIndex];
-
-      const buildersCount = prev.villagers.filter((v) => v.job === 'builder').length;
-      const craneMultiplier = (prev.buildings.crane_scaffolding?.count || 0) > 0 ? 2 : 1;
-      const constructionSpeed = Math.max(1, buildersCount * craneMultiplier);
-
-      const updatedBuildings = { ...prev.buildings };
-      const completedBuildings: string[] = [];
-
-      Object.keys(updatedBuildings).forEach((key) => {
-        const b = { ...updatedBuildings[key] };
-        if (b.constructionTurnsLeft > 0) {
-          b.constructionTurnsLeft = Math.max(0, b.constructionTurnsLeft - constructionSpeed);
-          if (b.constructionTurnsLeft === 0) {
-            b.count += 1;
-            completedBuildings.push(b.name);
-          }
-          updatedBuildings[key] = b;
-        }
-      });
-
-      const granariesCount = updatedBuildings.granary?.count || 0;
-      const maxFoodStorage = 120 + granariesCount * 100;
-      const maxWoodStorage = 120 + granariesCount * 40;
-      const maxStoneStorage = 100 + granariesCount * 40;
-      const maxClayStorage = 100 + granariesCount * 40;
-
-      // 1. Daily production additions
-      let newFood = Math.min(maxFoodStorage, prev.resources.food + rates.foodProduced);
-
-      // 2. Wood Consumption for Campfire & Heating
-      const isWinter = nextSeasonIdx === 3;
-      const woodNeeded = isWinter ? 2 : 1;
-      let newWood = prev.resources.wood + rates.wood;
-      let eventNote = '';
-
-      if (newWood >= woodNeeded) {
-        newWood -= woodNeeded;
-      } else {
-        newWood = 0;
-        eventNote = '❄️ Faltou lenha na fogueira central para aquecimento.';
-      }
-      newWood = Math.min(maxWoodStorage, Math.max(0, newWood));
-
-      let newStone = Math.min(maxStoneStorage, prev.resources.stone + rates.stone);
-      let newClay = Math.min(maxClayStorage, prev.resources.clay + rates.clay);
-      let newKnowledge = prev.resources.knowledge + rates.knowledge;
-
-      // 3. Update Daily Missions Progress
-      const updatedMissions = (prev.dailyMissions || []).map((m) => {
-        if (m.claimed) return m;
-        let curProgress = m.progress;
-        if (m.category === 'food') curProgress = Math.max(curProgress, newFood);
-        if (m.category === 'wood') curProgress = Math.max(curProgress, newWood);
-        if (m.category === 'stone') curProgress = Math.max(curProgress, newStone);
-        if (m.category === 'knowledge') curProgress = Math.max(curProgress, newKnowledge);
-        if (m.category === 'villagers') curProgress = Math.max(curProgress, prev.villagers.length);
-
-        return {
-          ...m,
-          progress: curProgress,
-          completed: curProgress >= m.target,
-        };
-      });
-
-      let updatedVillagers = [...prev.villagers];
-      // Auto-assign any remaining idle villagers on day advance if enabled
-      if (prev.autoAssignIdle !== false) {
-        updatedVillagers = autoAssignIdleVillagers(updatedVillagers, prev, rates);
-      }
-
-      let nextEra = prev.currentEra;
-      const unlockedCount = Object.values(prev.technologies).filter(
-        (t) => t.era === prev.currentEra && t.unlocked
-      ).length;
-
-      if (unlockedCount >= 3 && nextEra < 4) {
-        nextEra += 1;
-        eventNote = `🌟 Sua civilização evoluiu para a ${ERAS_INFO[nextEra].name}!`;
-      }
-
-      let gameWon = prev.gameWon;
-      if (updatedBuildings.ziggurat && updatedBuildings.ziggurat.count > 0 && !gameWon) {
-        gameWon = true;
-      }
-
-      let activeEvent = prev.activeEvent;
-      if (!activeEvent && nextTurn % 3 === 0 && Math.random() > 0.3) {
-        const ev = RANDOM_EVENTS[Math.floor(Math.random() * RANDOM_EVENTS.length)];
-        activeEvent = ev;
+      const { nextState, shouldPlayAlert } = advanceSimulationDay(prev, remainingHour, rates);
+      if (shouldPlayAlert) {
         audio.playAlert();
       }
-
-      const report: TurnReport = {
-        turn: prev.turn,
-        year: prev.year,
-        season: currentSeasonName,
-        foodProduced: rates.foodProduced,
-        foodConsumed: rates.foodConsumed,
-        woodProduced: rates.wood,
-        stoneProduced: rates.stone,
-        clayProduced: rates.clay,
-        knowledgeProduced: rates.knowledge,
-        completedBuildings,
-        populationChange: 0,
-        eventNote: eventNote || undefined,
-      };
-
-      return {
-        ...prev,
-        gameHour: remainingHour,
-        turn: nextTurn,
-        year: nextYear,
-        seasonIndex: nextSeasonIdx,
-        currentEra: nextEra,
-        resources: {
-          food: newFood,
-          wood: newWood,
-          stone: newStone,
-          clay: newClay,
-          knowledge: newKnowledge,
-        },
-        maxStorage: {
-          food: maxFoodStorage,
-          wood: maxWoodStorage,
-          stone: maxStoneStorage,
-          clay: maxClayStorage,
-        },
-        buildings: updatedBuildings,
-        villagers: updatedVillagers,
-        dailyMissions: updatedMissions,
-        activeEvent,
-        lastTurnReport: report,
-        gameWon,
-      };
+      return nextState;
     },
-    [rates, autoAssignIdleVillagers]
+    [rates]
   );
 
   // AUTOMATIC TIME CYCLE TIMER
-  // Automatically advances gameHour continuously (~0.4 hours per real second => 1 full 24h day = 60s)
+  // Automatically advances gameHour via GameClock (1 full 24h day = 15 minutes = 900s real time)
   useEffect(() => {
     const timer = setInterval(() => {
       setGameState((prev) => {
         if (prev.isGameOver || prev.isTimePaused) return prev;
 
-        const step = 0.08;
         const currentHour = prev.gameHour ?? 6.0;
-        const nextHour = currentHour + step;
+        const { nextHour, wrapped, remainingHour } = advanceGameHour(currentHour);
 
         // Check if full 24h day elapsed -> advance turn/day automatically!
-        if (nextHour >= 24.0) {
-          return executeAutoDayAdvance(prev, nextHour - 24.0);
+        if (wrapped) {
+          return executeAutoDayAdvance(prev, remainingHour);
         }
 
         // Meal events:
@@ -382,22 +123,11 @@ export default function App() {
         const crossedDinner = currentHour < 19.5 && nextHour >= 19.5;
 
         if (crossedBreakfast || crossedLunch || crossedDinner) {
-          const foodNeeded = Math.max(1, Math.ceil(prev.villagers.length * 0.34));
-          const hasFood = updatedFood >= foodNeeded;
-          updatedFood = Math.max(0, updatedFood - (hasFood ? foodNeeded : 0));
+          const mealResult = processMealConsumption(prev.resources.food, prev.villagers);
+          updatedFood = mealResult.updatedFood;
+          updatedVillagers = mealResult.updatedVillagers;
 
-          updatedVillagers = prev.villagers.map((v) => ({
-            ...v,
-            isFed: hasFood,
-            health: hasFood
-              ? Math.min(100, (v.health ?? 100) + 4)
-              : Math.max(10, (v.health ?? 100) - 10),
-            morale: hasFood
-              ? Math.min(100, v.morale + 3)
-              : Math.max(20, v.morale - 8),
-          }));
-
-          if (hasFood) {
+          if (mealResult.hasFood) {
             audio.playHarvest();
           } else {
             audio.playAlert();
@@ -414,7 +144,7 @@ export default function App() {
           villagers: updatedVillagers,
         };
       });
-    }, 200);
+    }, TICK_MS);
 
     return () => clearInterval(timer);
   }, [executeAutoDayAdvance]);
@@ -427,38 +157,30 @@ export default function App() {
     }));
   };
 
-  // Add 1 villager to a task: "coletar madeiras adicionar... coletar pedra adicionar... coletar alimentos adicionar"
+  // Add 1 villager to a task
   const handleAddTaskVillager = (job: JobType) => {
-    setGameState((prev) => {
-      const idleIdx = prev.villagers.findIndex((v) => v.job === 'idle');
-      if (idleIdx !== -1) {
-        const updated = [...prev.villagers];
-        updated[idleIdx] = { ...updated[idleIdx], job };
-        return { ...prev, villagers: updated };
-      }
-      return prev;
-    });
+    setGameState((prev) => ({
+      ...prev,
+      villagers: assignVillagerToJob(prev.villagers, job),
+    }));
   };
 
-  // Remove 1 villager from a task: "remover aldeão..."
+  // Remove 1 villager from a task
   const handleRemoveTaskVillager = (job: JobType) => {
-    setGameState((prev) => {
-      const jobIdx = prev.villagers.findIndex((v) => v.job === job);
-      if (jobIdx === -1) return prev;
-
-      const updated = [...prev.villagers];
-      updated[jobIdx] = { ...updated[jobIdx], job: 'idle' };
-
-      return { ...prev, villagers: updated };
-    });
+    setGameState((prev) => ({
+      ...prev,
+      villagers: unassignVillagerFromJob(prev.villagers, job),
+    }));
   };
 
   // Distribute idle villagers immediately to greatest need
   const handleAutoAssignNow = () => {
     setGameState((prev) => {
-      const assigned = autoAssignIdleVillagers(prev.villagers, prev, rates);
       audio.playWood();
-      return { ...prev, villagers: assigned };
+      return {
+        ...prev,
+        villagers: autoAssignIdleVillagers(prev.villagers, prev, rates),
+      };
     });
   };
 
@@ -472,10 +194,7 @@ export default function App() {
 
   // Recruit new villager (automatically assigned if auto-assign is on)
   const handleRecruitVillager = () => {
-    const housingCap = Object.values(gameState.buildings).reduce(
-      (acc, b) => acc + (b.housingCap || 0) * b.count,
-      0
-    );
+    const housingCap = calculateHousingCapacity(gameState.buildings);
 
     if (gameState.villagers.length >= housingCap || gameState.resources.food < 15) {
       return;
@@ -629,30 +348,19 @@ export default function App() {
     });
   };
 
-  // Start construction
+  // Start construction via BuildingSystem
   const handleStartConstruction = (buildingId: string) => {
     setGameState((prev) => {
-      const b = prev.buildings[buildingId];
-      if (!b) return prev;
-
-      const newResources = { ...prev.resources };
-      if (b.cost.wood) newResources.wood -= b.cost.wood;
-      if (b.cost.stone) newResources.stone -= b.cost.stone;
-      if (b.cost.clay) newResources.clay -= b.cost.clay;
-      if (b.cost.knowledge) newResources.knowledge -= b.cost.knowledge;
-
-      const updated = {
-        ...b,
-        constructionTurnsLeft: b.constructionTurnsTotal,
-      };
-
+      const { success, updatedBuildings, updatedResources } = startBuildingConstruction(
+        prev.buildings,
+        prev.resources,
+        buildingId
+      );
+      if (!success) return prev;
       return {
         ...prev,
-        resources: newResources,
-        buildings: {
-          ...prev.buildings,
-          [buildingId]: updated,
-        },
+        resources: updatedResources,
+        buildings: updatedBuildings,
       };
     });
   };
@@ -680,17 +388,26 @@ export default function App() {
   // Resolve Event
   const handleResolveEventOption = (optionIndex: number) => {
     if (!gameState.activeEvent) return;
-    const option = gameState.activeEvent.options[optionIndex];
-    if (option) {
-      const updates = option.action(gameState);
-      setGameState((prev) => ({
-        ...prev,
-        ...updates,
-        activeEvent: null,
-      }));
-    } else {
-      setGameState((prev) => ({ ...prev, activeEvent: null }));
+
+    // Look up canonical event to guarantee action function exists even if state had been serialized
+    const canonicalEvent = RANDOM_EVENTS.find((e) => e.id === gameState.activeEvent?.id);
+    const targetOption = canonicalEvent?.options[optionIndex] || gameState.activeEvent.options[optionIndex];
+
+    if (targetOption && typeof targetOption.action === 'function') {
+      try {
+        const updates = targetOption.action(gameState);
+        setGameState((prev) => ({
+          ...prev,
+          ...updates,
+          activeEvent: null,
+        }));
+        return;
+      } catch (err) {
+        console.error('Error executing event action:', err);
+      }
     }
+
+    setGameState((prev) => ({ ...prev, activeEvent: null }));
   };
 
   // Toggle Sound

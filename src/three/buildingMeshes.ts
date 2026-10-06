@@ -374,3 +374,182 @@ export function createRockQuarryMesh(): THREE.Group {
 
   return group;
 }
+
+// 4. Clay Pit / Riverbed (Oleiro - potter)
+export function createClayPitMesh(): THREE.Group {
+  const group = new THREE.Group();
+  group.name = 'clay_pit';
+
+  // Terracotta moist clay soil bed
+  const bedGeo = new THREE.PlaneGeometry(3.6, 3.2);
+  const bedMat = new THREE.MeshStandardMaterial({ color: 0xb45309, roughness: 0.6 });
+  const bed = new THREE.Mesh(bedGeo, bedMat);
+  bed.rotation.x = -Math.PI / 2;
+  bed.position.y = 0.015;
+  bed.receiveShadow = true;
+  group.add(bed);
+
+  // Water puddle / alluvial clay water
+  const puddleGeo = new THREE.CircleGeometry(0.7, 16);
+  const puddleMat = new THREE.MeshStandardMaterial({ color: 0x38bdf8, roughness: 0.1, metalness: 0.2 });
+  const puddle = new THREE.Mesh(puddleGeo, puddleMat);
+  puddle.rotation.x = -Math.PI / 2;
+  puddle.position.set(-0.5, 0.02, 0.4);
+  group.add(puddle);
+
+  // Clay mounds / dug earth
+  for (let i = 0; i < 4; i++) {
+    const moundGeo = new THREE.SphereGeometry(0.35 + Math.random() * 0.2, 8, 8, 0, Math.PI * 2, 0, Math.PI * 0.5);
+    const moundMat = new THREE.MeshStandardMaterial({ color: 0x9a3412, roughness: 0.9 });
+    const mound = new THREE.Mesh(moundGeo, moundMat);
+    mound.position.set((Math.random() - 0.5) * 1.8, 0, (Math.random() - 0.5) * 1.6);
+    mound.castShadow = true;
+    group.add(mound);
+  }
+
+  // Raw terracotta pots drying in the sun
+  for (let i = 0; i < 3; i++) {
+    const potGeo = new THREE.CylinderGeometry(0.12, 0.08, 0.25, 8);
+    const potMat = new THREE.MeshStandardMaterial({ color: 0xc2410c, roughness: 0.7 });
+    const pot = new THREE.Mesh(potGeo, potMat);
+    pot.position.set(0.8 + (i % 2) * 0.25, 0.12, -0.6 + i * 0.3);
+    pot.castShadow = true;
+    group.add(pot);
+  }
+
+  return group;
+}
+
+// 5. Active Builder Construction Site (Construtor - builder)
+export function createBuilderSiteMesh(): THREE.Group {
+  const group = new THREE.Group();
+  group.name = 'builder_site';
+
+  // Timber scaffolding poles
+  for (let i = 0; i < 4; i++) {
+    const poleGeo = new THREE.CylinderGeometry(0.04, 0.04, 1.8, 6);
+    const pole = new THREE.Mesh(poleGeo, woodMat);
+    const x = (i % 2 === 0 ? -0.8 : 0.8);
+    const z = (i < 2 ? -0.8 : 0.8);
+    pole.position.set(x, 0.9, z);
+    pole.castShadow = true;
+    group.add(pole);
+  }
+
+  // Cross timbers
+  const crossBeamGeo = new THREE.CylinderGeometry(0.03, 0.03, 1.7, 6);
+  const beam1 = new THREE.Mesh(crossBeamGeo, woodMat);
+  beam1.rotation.z = Math.PI / 2;
+  beam1.position.set(0, 1.2, -0.8);
+  group.add(beam1);
+
+  const beam2 = new THREE.Mesh(crossBeamGeo, woodMat);
+  beam2.rotation.z = Math.PI / 2;
+  beam2.position.set(0, 1.2, 0.8);
+  group.add(beam2);
+
+  // Stack of cut stone blocks
+  for (let y = 0; y < 2; y++) {
+    for (let x = 0; x < 2; x++) {
+      const blockGeo = new THREE.BoxGeometry(0.3, 0.2, 0.3);
+      const block = new THREE.Mesh(blockGeo, stoneMat);
+      block.position.set(x * 0.32 - 0.16, y * 0.21 + 0.1, 0);
+      block.castShadow = true;
+      group.add(block);
+    }
+  }
+
+  return group;
+}
+
+// 6. Elder Study Desk / Cuneiform Altar (Ancião - elder)
+export function createElderDeskMesh(): THREE.Group {
+  const group = new THREE.Group();
+  group.name = 'elder_desk';
+
+  // Carved stone reading table
+  const tableTopGeo = new THREE.BoxGeometry(1.2, 0.1, 0.7);
+  const tableTop = new THREE.Mesh(tableTopGeo, stoneMat);
+  tableTop.position.set(0, 0.65, 0);
+  tableTop.castShadow = true;
+  group.add(tableTop);
+
+  // Stone pillars / legs
+  for (let i = -1; i <= 1; i += 2) {
+    const legGeo = new THREE.BoxGeometry(0.18, 0.6, 0.55);
+    const leg = new THREE.Mesh(legGeo, darkStoneMat);
+    leg.position.set(i * 0.45, 0.3, 0);
+    leg.castShadow = true;
+    group.add(leg);
+  }
+
+  // Clay tablets on desk
+  const tabGeo = new THREE.BoxGeometry(0.2, 0.04, 0.15);
+  const tabMat = new THREE.MeshStandardMaterial({ color: 0xd97706, roughness: 0.8 });
+  const tab1 = new THREE.Mesh(tabGeo, tabMat);
+  tab1.position.set(-0.25, 0.72, 0.05);
+  tab1.rotation.y = 0.2;
+  group.add(tab1);
+
+  const tab2 = new THREE.Mesh(tabGeo, tabMat);
+  tab2.position.set(0.2, 0.72, -0.05);
+  tab2.rotation.y = -0.3;
+  group.add(tab2);
+
+  // Brazier with embers
+  const brazierGeo = new THREE.CylinderGeometry(0.12, 0.06, 0.3, 8);
+  const brazier = new THREE.Mesh(brazierGeo, darkStoneMat);
+  brazier.position.set(0.8, 0.2, 0.3);
+  group.add(brazier);
+
+  const emberGeo = new THREE.SphereGeometry(0.06, 8, 8);
+  const emberMat = new THREE.MeshBasicMaterial({ color: 0xf59e0b });
+  const ember = new THREE.Mesh(emberGeo, emberMat);
+  ember.position.set(0.8, 0.35, 0.3);
+  group.add(ember);
+
+  return group;
+}
+
+// 7. Guard Watchpost / Totem (Guarda - guard)
+export function createGuardPostMesh(): THREE.Group {
+  const group = new THREE.Group();
+  group.name = 'guard_post';
+
+  // Watchpost timber mast
+  const poleGeo = new THREE.CylinderGeometry(0.06, 0.08, 2.8, 8);
+  const pole = new THREE.Mesh(poleGeo, darkWoodMat);
+  pole.position.y = 1.4;
+  pole.castShadow = true;
+  group.add(pole);
+
+  // Crossarm with tribal banner / pennant
+  const bannerArmGeo = new THREE.CylinderGeometry(0.03, 0.03, 0.8, 6);
+  const bannerArm = new THREE.Mesh(bannerArmGeo, woodMat);
+  bannerArm.rotation.z = Math.PI / 2;
+  bannerArm.position.set(0.3, 2.4, 0);
+  group.add(bannerArm);
+
+  const bannerGeo = new THREE.PlaneGeometry(0.45, 0.7);
+  const bannerMat = new THREE.MeshStandardMaterial({ color: 0xd97706, side: THREE.DoubleSide });
+  const banner = new THREE.Mesh(bannerGeo, bannerMat);
+  banner.position.set(0.3, 2.05, 0);
+  group.add(banner);
+
+  // Weapon rack with spears
+  const rackGeo = new THREE.BoxGeometry(0.4, 0.1, 0.2);
+  const rack = new THREE.Mesh(rackGeo, woodMat);
+  rack.position.set(-0.4, 0.4, 0);
+  group.add(rack);
+
+  for (let i = -1; i <= 1; i++) {
+    const spearGeo = new THREE.CylinderGeometry(0.02, 0.02, 1.4, 6);
+    const spear = new THREE.Mesh(spearGeo, woodMat);
+    spear.position.set(-0.4 + i * 0.1, 0.7, 0);
+    spear.rotation.z = 0.1 * i;
+    group.add(spear);
+  }
+
+  return group;
+}
+

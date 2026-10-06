@@ -4,8 +4,12 @@ import { GameState, JobType, Villager } from '../types/game';
 import { CharacterRig, createCharacterMesh, setupToolForJob } from './characterMesh';
 import { getCelestialTimeInfo, DailyRoutine } from '../utils/timeCycle';
 import {
+  createBuilderSiteMesh,
   createCampfireMesh,
+  createClayPitMesh,
+  createElderDeskMesh,
   createGranaryMesh,
+  createGuardPostMesh,
   createHutMesh,
   createLonghouseMesh,
   createRockQuarryMesh,
@@ -179,13 +183,13 @@ export const ThreeVillageScene: React.FC<ThreeVillageSceneProps> = ({
   const effectiveTimeOfDay: TimeOfDay = useMemo(() => {
     if (timeOfDayOverride !== 'auto') return timeOfDayOverride;
     const hour = gameState.gameHour ?? 6.0;
-    // 05:00 - 08:00 -> Alvorada / Amanhecer
-    if (hour >= 5.0 && hour < 8.0) return 'dawn';
+    // 05:30 - 08:00 -> Alvorada / Amanhecer
+    if (hour >= 5.5 && hour < 8.0) return 'dawn';
     // 08:00 - 17.5 -> Dia Pleno
     if (hour >= 8.0 && hour < 17.5) return 'day';
-    // 17.5 - 20.0 -> Pôr do Sol / Entardecer
-    if (hour >= 17.5 && hour < 20.0) return 'sunset';
-    // 20.0 - 05.0 -> Noite Sombria
+    // 17.5 - 19.5 -> Pôr do Sol / Entardecer
+    if (hour >= 17.5 && hour < 19.5) return 'sunset';
+    // 19.5 - 05.30 -> Noite Sombria
     return 'night';
   }, [gameState.gameHour, timeOfDayOverride]);
 
@@ -211,7 +215,7 @@ export const ThreeVillageScene: React.FC<ThreeVillageSceneProps> = ({
   // Follow camera mode
   const [followVillager, setFollowVillager] = useState(false);
 
-  // Resource nodes positions
+  // Resource nodes positions (Áreas específicas da tela baseadas nos cargos)
   const RESOURCE_NODES = {
     wheat: new THREE.Vector3(-6.5, 0, 4.0),
     wood: new THREE.Vector3(-6.0, 0, -5.5),
@@ -220,6 +224,8 @@ export const ThreeVillageScene: React.FC<ThreeVillageSceneProps> = ({
     storage: new THREE.Vector3(0, 0, 1.2),
     campfire: new THREE.Vector3(0, 0, -0.8),
     buildersite: new THREE.Vector3(3.0, 0, 0),
+    elderDesk: new THREE.Vector3(-2.2, 0, -2.8),
+    guardPost: new THREE.Vector3(5.5, 0, 5.0),
   };
 
   // 1. Initial Scene Setup
@@ -374,6 +380,35 @@ export const ThreeVillageScene: React.FC<ThreeVillageSceneProps> = ({
     campfire.position.copy(RESOURCE_NODES.campfire);
     campfireGroupRef.current = campfire;
     scene.add(campfire);
+
+    // 5. Clay Pit (Oleiro / potter area)
+    const clayGroup = createClayPitMesh();
+    clayGroup.position.copy(RESOURCE_NODES.clay);
+    clayGroup.name = 'clay_node';
+    scene.add(clayGroup);
+
+    // 6. Active Builder Site (Construtor / builder area)
+    const builderGroup = createBuilderSiteMesh();
+    builderGroup.position.copy(RESOURCE_NODES.buildersite);
+    builderGroup.name = 'builder_node';
+    scene.add(builderGroup);
+
+    // 7. Elder Study Altar & Table (Ancião / elder research area)
+    const elderGroup = createElderDeskMesh();
+    elderGroup.position.copy(RESOURCE_NODES.elderDesk);
+    elderGroup.name = 'elder_node';
+    scene.add(elderGroup);
+
+    // 8. Guard Watchposts (Guarda / guard perimeter posts)
+    const guardPost1 = createGuardPostMesh();
+    guardPost1.position.copy(RESOURCE_NODES.guardPost);
+    guardPost1.name = 'guard_node_1';
+    scene.add(guardPost1);
+
+    const guardPost2 = createGuardPostMesh();
+    guardPost2.position.set(-5.5, 0, 5.0);
+    guardPost2.name = 'guard_node_2';
+    scene.add(guardPost2);
 
     // Buildings container group
     const buildingsGroup = new THREE.Group();
@@ -682,17 +717,22 @@ export const ThreeVillageScene: React.FC<ThreeVillageSceneProps> = ({
           idleLookAngle: (Math.random() - 0.5) * 1.2,
           idleSeed: index * 2.17 + Math.random() * 5,
         };
+        agent.speed = 2.1;
         currentAgents.set(villager.id, agent);
+        // Direct movement to assigned workplace
+        assignAgentJobBehavior(agent, villager.job, true);
       } else {
-        // Update tool on hand if job changed
-        if (agent.villager.job !== villager.job) {
+        const jobChanged = agent.villager.job !== villager.job;
+        if (jobChanged) {
           setupToolForJob(agent.rig.toolSlot, villager.job);
         }
         agent.villager = villager;
-      }
 
-      // Assign target behavior based on job
-      assignAgentJobBehavior(agent, villager.job);
+        // If job changed via task bar, immediately send the villager to their new area!
+        if (jobChanged) {
+          assignAgentJobBehavior(agent, villager.job, true);
+        }
+      }
     });
   }, [gameState.villagers]);
 
@@ -706,87 +746,102 @@ export const ThreeVillageScene: React.FC<ThreeVillageSceneProps> = ({
     }
   }, [currentRoutine]);
 
-  const assignAgentJobBehavior = (agent: VillagerAgent, job: JobType) => {
+  const assignAgentJobBehavior = (
+    agent: VillagerAgent,
+    job: JobType,
+    forceWork: boolean = false
+  ) => {
     const routine = getCelestialTimeInfo(gameState.gameHour ?? 6.0).routine;
 
-    // 1. REFEIÇÕES: Café da Manhã (ao amanhecer), Almoço (ao meio-dia), Jantar (à noite)
-    if (routine === 'breakfast' || routine === 'lunch' || routine === 'dinner') {
-      const agentKeys = Array.from(agentsRef.current.keys());
-      const idx = agentKeys.indexOf(agent.villager.id);
-      const angle = (idx / Math.max(1, agentKeys.length)) * Math.PI * 2;
-      const radius = 1.45 + (Math.sin(angle * 4) * 0.25);
-      agent.target = RESOURCE_NODES.campfire.clone().add(
-        new THREE.Vector3(Math.cos(angle) * radius, 0, Math.sin(angle) * radius)
-      );
-      agent.state = 'eating_meal';
-      agent.rig.wheatCarry.visible = false;
-      agent.rig.toolSlot.visible = false;
-      agent.rig.mealBowl.visible = true;
-      return;
+    // 1. REFEIÇÕES / DESCANSO: Somente se não for atribuição manual direta ou início de turno
+    if (!forceWork) {
+      if (routine === 'breakfast' || routine === 'lunch' || routine === 'dinner') {
+        const agentKeys = Array.from(agentsRef.current.keys());
+        const idx = agentKeys.indexOf(agent.villager.id);
+        const angle = (idx / Math.max(1, agentKeys.length)) * Math.PI * 2;
+        const radius = 1.45 + Math.sin(angle * 4) * 0.25;
+        agent.target = RESOURCE_NODES.campfire.clone().add(
+          new THREE.Vector3(Math.cos(angle) * radius, 0, Math.sin(angle) * radius)
+        );
+        agent.state = 'eating_meal';
+        agent.rig.wheatCarry.visible = false;
+        agent.rig.toolSlot.visible = false;
+        agent.rig.mealBowl.visible = true;
+        return;
+      }
+
+      if (routine === 'sleep') {
+        const agentKeys = Array.from(agentsRef.current.keys());
+        const idx = agentKeys.indexOf(agent.villager.id);
+        const angle = (idx / Math.max(1, agentKeys.length)) * Math.PI * 2 + Math.PI;
+        const radius = 1.8 + Math.cos(angle * 3) * 0.3;
+        agent.target = RESOURCE_NODES.campfire.clone().add(
+          new THREE.Vector3(Math.cos(angle) * radius, 0, Math.sin(angle) * radius)
+        );
+        agent.state = 'sleeping';
+        agent.rig.wheatCarry.visible = false;
+        agent.rig.toolSlot.visible = false;
+        agent.rig.mealBowl.visible = false;
+        return;
+      }
     }
 
-    // 2. DESCANSO NOTURNO: Na madrugada ao redor da fogueira
-    if (routine === 'sleep') {
-      const agentKeys = Array.from(agentsRef.current.keys());
-      const idx = agentKeys.indexOf(agent.villager.id);
-      const angle = (idx / Math.max(1, agentKeys.length)) * Math.PI * 2 + Math.PI;
-      const radius = 1.8 + (Math.cos(angle * 3) * 0.3);
-      agent.target = RESOURCE_NODES.campfire.clone().add(
-        new THREE.Vector3(Math.cos(angle) * radius, 0, Math.sin(angle) * radius)
-      );
-      agent.state = 'sleeping';
-      agent.rig.wheatCarry.visible = false;
-      agent.rig.toolSlot.visible = false;
-      agent.rig.mealBowl.visible = false;
-      return;
-    }
-
-    // 3. HORÁRIO DE TRABALHO: Retoma ferramentas e tarefas nas coletas
+    // 2. HORÁRIO DE TRABALHO / ATRIBUIÇÃO DE CARGO:
+    // Move o aldeão diretamente para a área específica da tela baseada no cargo atribuído
     agent.rig.mealBowl.visible = false;
     agent.rig.toolSlot.visible = true;
+    setupToolForJob(agent.rig.toolSlot, job);
 
     if (job === 'farmer') {
+      // 🌾 Move para os CAMPOS DE TRIGO
       agent.target = RESOURCE_NODES.wheat.clone().add(
-        new THREE.Vector3((Math.random() - 0.5) * 2, 0, (Math.random() - 0.5) * 2)
+        new THREE.Vector3((Math.random() - 0.5) * 2.2, 0, (Math.random() - 0.5) * 2.2)
       );
       agent.state = 'walking_to_resource';
       agent.rig.wheatCarry.visible = false;
     } else if (job === 'lumberjack') {
+      // 🪵 Move para a FLORESTA / BOSQUE DE CONÍFERAS
       agent.target = RESOURCE_NODES.wood.clone().add(
-        new THREE.Vector3((Math.random() - 0.5) * 2, 0, (Math.random() - 0.5) * 2)
+        new THREE.Vector3((Math.random() - 0.5) * 2.2, 0, (Math.random() - 0.5) * 2.2)
       );
       agent.state = 'walking_to_resource';
       agent.rig.wheatCarry.visible = false;
     } else if (job === 'quarryman') {
+      // 🪨 Move para a PEDREIRA DE ROCHAS
       agent.target = RESOURCE_NODES.stone.clone().add(
-        new THREE.Vector3((Math.random() - 0.5) * 1.5, 0, (Math.random() - 0.5) * 1.5)
+        new THREE.Vector3((Math.random() - 0.5) * 1.8, 0, (Math.random() - 0.5) * 1.8)
       );
       agent.state = 'walking_to_resource';
       agent.rig.wheatCarry.visible = false;
     } else if (job === 'potter') {
+      // 🧱 Move para a MARGEM FLUVIAL DE ARGILA
       agent.target = RESOURCE_NODES.clay.clone().add(
-        new THREE.Vector3((Math.random() - 0.5) * 1.5, 0, (Math.random() - 0.5) * 1.5)
+        new THREE.Vector3((Math.random() - 0.5) * 1.8, 0, (Math.random() - 0.5) * 1.8)
       );
       agent.state = 'walking_to_resource';
       agent.rig.wheatCarry.visible = false;
     } else if (job === 'builder') {
+      // 🔨 Move para o CANTEIRO DE OBRAS E ANDAIMES
       agent.target = RESOURCE_NODES.buildersite.clone().add(
-        new THREE.Vector3((Math.random() - 0.5) * 1.5, 0, (Math.random() - 0.5) * 1.5)
+        new THREE.Vector3((Math.random() - 0.5) * 1.6, 0, (Math.random() - 0.5) * 1.6)
       );
       agent.state = 'walking_to_resource';
       agent.rig.wheatCarry.visible = false;
     } else if (job === 'guard') {
-      // Patrol perimeter
-      agent.target = new THREE.Vector3(5.0, 0, 5.0);
+      // 🛡️ Move para os POSTOS DE PATRULHA E DEFESA
+      const side = Math.random() > 0.5 ? 1 : -1;
+      agent.target = new THREE.Vector3(5.2 * side, 0, 5.0 + (Math.random() - 0.5) * 1.5);
       agent.state = 'walking_to_resource';
       agent.rig.wheatCarry.visible = false;
     } else if (job === 'elder') {
-      // Gather by campfire or tablet desk
-      agent.target = RESOURCE_NODES.campfire.clone().add(new THREE.Vector3(1.2, 0, 0));
+      // 📜 Move para a MESA DE ESTUDOS E SABEDORIA
+      agent.target = RESOURCE_NODES.elderDesk.clone().add(
+        new THREE.Vector3((Math.random() - 0.5) * 0.8, 0, (Math.random() - 0.5) * 0.8)
+      );
       agent.state = 'walking_to_resource';
       agent.rig.wheatCarry.visible = false;
     } else {
-      // Idle: gather or wander around campfire, relax and perform idle behaviors
+      // 💤 Aldeão livre / desocupado: permanece no Centro / Fogueira
       agent.target = RESOURCE_NODES.campfire.clone().add(
         new THREE.Vector3((Math.random() - 0.5) * 2.8, 0, (Math.random() - 0.5) * 2.8)
       );
@@ -902,10 +957,12 @@ export const ThreeVillageScene: React.FC<ThreeVillageSceneProps> = ({
             onVillagerGathersRef.current?.('wood', 1);
           } else if (agent.villager.job === 'quarryman') {
             onVillagerGathersRef.current?.('stone', 1);
+          } else if (agent.villager.job === 'potter') {
+            onVillagerGathersRef.current?.('clay', 1);
           }
 
-          // Return to resource
-          assignAgentJobBehavior(agent, agent.villager.job);
+          // Return to assigned resource area (or join meal if currently breakfast/lunch/dinner)
+          assignAgentJobBehavior(agent, agent.villager.job, false);
         } else if (agent.state === 'walking_to_resource') {
           // Reached resource node -> begin working!
           agent.state = 'working';
@@ -1314,20 +1371,31 @@ export const ThreeVillageScene: React.FC<ThreeVillageSceneProps> = ({
     }
   };
 
-  // Camera presets
-  const resetCamera = (preset: 'overview' | 'fields' | 'camp' | 'quarry') => {
+  // Camera presets focused on task areas
+  const resetCamera = (
+    preset: 'overview' | 'fields' | 'camp' | 'quarry' | 'forest' | 'clay' | 'builder'
+  ) => {
     if (preset === 'overview') {
       camAngleRef.current = { theta: Math.PI / 4, phi: Math.PI / 3.2, radius: 16 };
       camTargetRef.current.set(0, 0.8, 0);
     } else if (preset === 'fields') {
       camAngleRef.current = { theta: Math.PI / 1.8, phi: Math.PI / 3.4, radius: 10 };
-      camTargetRef.current.set(-5, 0.8, 3.5);
+      camTargetRef.current.set(-6.5, 0.8, 4.0);
+    } else if (preset === 'forest') {
+      camAngleRef.current = { theta: Math.PI * 0.75, phi: Math.PI / 3.3, radius: 11 };
+      camTargetRef.current.set(-6.0, 0.8, -5.5);
+    } else if (preset === 'quarry') {
+      camAngleRef.current = { theta: -Math.PI / 3, phi: Math.PI / 3.4, radius: 10 };
+      camTargetRef.current.set(6.5, 0.8, -4.5);
+    } else if (preset === 'clay') {
+      camAngleRef.current = { theta: -Math.PI * 0.65, phi: Math.PI / 3.3, radius: 10 };
+      camTargetRef.current.set(7.0, 0.8, 3.5);
+    } else if (preset === 'builder') {
+      camAngleRef.current = { theta: -Math.PI / 5, phi: Math.PI / 3.2, radius: 9 };
+      camTargetRef.current.set(3.0, 0.8, 0);
     } else if (preset === 'camp') {
       camAngleRef.current = { theta: 0, phi: Math.PI / 3.0, radius: 8 };
       camTargetRef.current.set(0, 0.8, 0);
-    } else if (preset === 'quarry') {
-      camAngleRef.current = { theta: -Math.PI / 3, phi: Math.PI / 3.4, radius: 10 };
-      camTargetRef.current.set(6, 0.8, -4);
     }
     updateCameraPosition();
   };
@@ -1350,35 +1418,56 @@ export const ThreeVillageScene: React.FC<ThreeVillageSceneProps> = ({
     >
       {/* 3D View Controls HUD Bar (Positioned below top game header) */}
       <div className="absolute top-16 right-3 sm:right-4 z-10 flex flex-wrap items-center gap-2 pointer-events-none">
-        {/* Camera Preset Quick Buttons */}
-        <div className="pointer-events-auto bg-[#FDFBF7]/95 backdrop-blur-xs border-2 border-[#33261D] p-1 rounded-xl shadow-md flex items-center gap-1">
+        {/* Camera Preset Quick Buttons focused on Work Areas */}
+        <div className="pointer-events-auto bg-[#FDFBF7]/95 backdrop-blur-xs border-2 border-[#33261D] p-1 rounded-xl shadow-md flex items-center gap-1 overflow-x-auto max-w-[85vw] sm:max-w-none">
           <button
             onClick={() => resetCamera('overview')}
-            className="px-2.5 py-1 text-xs font-bold rounded-lg hover:bg-[#EFE4CE] text-stone-800 transition-colors"
-            title="Visão Geral"
+            className="px-2 py-1 text-[11px] font-bold rounded-lg hover:bg-[#EFE4CE] text-stone-800 transition-colors whitespace-nowrap"
+            title="Visão Geral da Aldeia"
           >
             Geral
           </button>
           <button
             onClick={() => resetCamera('fields')}
-            className="px-2.5 py-1 text-xs font-bold rounded-lg hover:bg-[#EFE4CE] text-stone-800 transition-colors"
-            title="Campos de Trigo"
+            className="px-2 py-1 text-[11px] font-bold rounded-lg hover:bg-[#EFE4CE] text-stone-800 transition-colors whitespace-nowrap"
+            title="Campos de Trigo (Agricultores)"
           >
             🌾 Trigo
           </button>
           <button
-            onClick={() => resetCamera('camp')}
-            className="px-2.5 py-1 text-xs font-bold rounded-lg hover:bg-[#EFE4CE] text-stone-800 transition-colors"
-            title="Centro / Fogueira"
+            onClick={() => resetCamera('forest')}
+            className="px-2 py-1 text-[11px] font-bold rounded-lg hover:bg-[#EFE4CE] text-stone-800 transition-colors whitespace-nowrap"
+            title="Floresta de Coníferas (Lenhadores)"
           >
-            🛖 Centro
+            🪵 Floresta
           </button>
           <button
             onClick={() => resetCamera('quarry')}
-            className="px-2.5 py-1 text-xs font-bold rounded-lg hover:bg-[#EFE4CE] text-stone-800 transition-colors"
-            title="Pedreira"
+            className="px-2 py-1 text-[11px] font-bold rounded-lg hover:bg-[#EFE4CE] text-stone-800 transition-colors whitespace-nowrap"
+            title="Pedreira de Rochas (Pedreiros)"
           >
             🪨 Pedreira
+          </button>
+          <button
+            onClick={() => resetCamera('clay')}
+            className="px-2 py-1 text-[11px] font-bold rounded-lg hover:bg-[#EFE4CE] text-stone-800 transition-colors whitespace-nowrap"
+            title="Margem Fluvial de Argila (Oleiros)"
+          >
+            🧱 Argila
+          </button>
+          <button
+            onClick={() => resetCamera('builder')}
+            className="px-2 py-1 text-[11px] font-bold rounded-lg hover:bg-[#EFE4CE] text-stone-800 transition-colors whitespace-nowrap"
+            title="Canteiro de Obras (Construtores)"
+          >
+            🔨 Obras
+          </button>
+          <button
+            onClick={() => resetCamera('camp')}
+            className="px-2 py-1 text-[11px] font-bold rounded-lg hover:bg-[#EFE4CE] text-stone-800 transition-colors whitespace-nowrap"
+            title="Centro / Fogueira da Vila"
+          >
+            🛖 Centro
           </button>
 
           <div className="h-4 w-px bg-stone-300 mx-1"></div>
@@ -1427,7 +1516,7 @@ export const ThreeVillageScene: React.FC<ThreeVillageSceneProps> = ({
             <span className="text-sm">{TIME_OF_DAY_INFO[effectiveTimeOfDay].icon}</span>
             <span>{TIME_OF_DAY_INFO[effectiveTimeOfDay].name}</span>
             {timeOfDayOverride === 'auto' ? (
-              <span className="text-[10px] opacity-75 font-mono">(Turno)</span>
+              <span className="text-[10px] opacity-75 font-mono">(Automático)</span>
             ) : (
               <span className="text-[10px] bg-white/20 px-1 rounded font-mono">Fixo</span>
             )}
